@@ -1,0 +1,13 @@
+{
+  "name": "latido-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Migraciones SQL, políticas RLS y Edge Functions de LATIDO",
+  "scripts": {
+    "test": "node tests/migrations.test.mjs && node tests/contract.test.mjs && node tests/encoding.test.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.9"
+  }
+}
