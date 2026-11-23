@@ -29,7 +29,7 @@ async function expectError(promise, msg, includes) {
 await db.exec(`
   CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN;
   CREATE SCHEMA auth;
-  CREATE TABLE auth.users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email text, raw_user_meta_data jsonb DEFAULT '{}');
+  CREATE TABLE auth.users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email text, raw_user_meta_data jsonb DEFAULT '{}', last_sign_in_at timestamptz);
   CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
     $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
   GRANT USAGE ON SCHEMA auth TO anon, authenticated;
@@ -67,7 +67,7 @@ for (const f of fs.readdirSync(MIG_DIR).filter(f => f.endsWith('.sql')).sort()) 
   try { await db.exec(fs.readFileSync(path.join(MIG_DIR, f), 'utf8')); ok(true, f); }
   catch (e) { ok(false, `${f}: ${e.message}`); console.log('\nAbortado.'); process.exit(1); }
 }
-for (const f of ['007_planes_soportes_y_privacidad.sql', '008_permisos_minimos.sql', '009_alta_de_negocios_por_super_admin.sql', '010_encuesta_y_gestion_completa.sql', '011_logos_negocios.sql']) {
+for (const f of ['007_planes_soportes_y_privacidad.sql', '008_permisos_minimos.sql', '009_alta_de_negocios_por_super_admin.sql', '010_encuesta_y_gestion_completa.sql', '011_logos_negocios.sql', '012_super_admin_diagnostico.sql']) {
   try { await db.exec(fs.readFileSync(path.join(MIG_DIR, f), 'utf8')); ok(true, `${f} es idempotente`); }
   catch (e) { ok(false, `${f} re-ejecución: ${e.message}`); }
 }
@@ -334,6 +334,27 @@ const delByA = await q(A, `DELETE FROM storage.objects WHERE name = '${bizAId}/l
 ok(delByA.rows.length === 1, 'Negocio A sí puede borrar su propio logo');
 const ov11 = await q(S, `SELECT name, logo_url FROM public.get_platform_overview()`);
 ok(ov11.rows.find(r => r.name === 'Cafetería del Sol')?.logo_url?.includes(bizAId), 'Libro mayor del Super Admin incluye logo_url');
+
+console.log('\n[13b] Diagnóstico detallado por negocio para Super Admin (012)');
+await expectError(as('anon', null, tx => tx.query(`SELECT public.get_business_diagnostics($1)`, [bizAId])), 'Anon NO puede consultar diagnóstico', 'permission denied');
+await expectError(q(A, `SELECT public.get_business_diagnostics('${bizAId}')`), 'Admin de negocio NO puede consultar diagnóstico Super Admin', 'Solo el Super Admin');
+await expectError(q(B, `SELECT public.get_business_diagnostics('${bizAId}')`), 'Otro negocio NO puede consultar diagnóstico', 'Solo el Super Admin');
+const diagRes = await q(S, `SELECT public.get_business_diagnostics('${bizAId}') AS d`);
+const diag = diagRes.rows[0].d;
+ok(diag && diag.business?.name === 'Cafetería del Sol' && diag.business?.has_custom_survey === true && diag.business?.owner_email === 'sofia@sol.com', 'Super Admin obtiene configuración y salud de onboarding');
+ok(Number(diag.metrics?.responses_total) >= 2 && diag.metrics?.distribution && Array.isArray(diag.metrics?.top_tags), 'Super Admin obtiene métricas, distribución y top etiquetas');
+ok(diag.rescue && typeof diag.rescue.cases_total === 'number' && Array.isArray(diag.branches) && diag.branches.length >= 1, 'Super Admin obtiene salud del Modo Rescate y desglose por sucursal');
+const diagJson = JSON.stringify(diag.recent_activity || []);
+ok(
+  Array.isArray(diag.recent_activity) &&
+  diag.recent_activity.length >= 1 &&
+  !diagJson.includes('comment') === false && // has_comment boolean permitido
+  !diagJson.includes('martin@mail.com') &&
+  !diagJson.includes('5493815551234') &&
+  !diagJson.includes('Martín') &&
+  diag.recent_activity.every(item => !('comment' in item) && !('full_name' in item) && !('email' in item) && !('phone' in item)),
+  'Actividad reciente del diagnóstico 100% anonimizada (0 PII y 0 texto libre)'
+);
 
 console.log('\n[14] Anti-flood');
 let floodErr = null;
