@@ -146,3 +146,24 @@ El proyecto `uzcmiuqjugsovhlwcarr` quedó indefinidamente en “Coming up…” 
   - Pruebas versionadas en el repositorio: `package.json` + `tests/migrations.test.mjs` (**142/142 OK**, suma verificación de congelamiento de `avg_ticket_snapshot`, borrado de `message_sent` en purga de 12 meses y auditoría de catálogos Postgres: 100% RLS activo, `anon` limitado a `plans:SELECT` + 2 RPCs), `tests/contract.test.mjs` y `tests/encoding.test.mjs` ejecutables con `npm test`.
   - Script de solo lectura `supabase/optional/verificar_estado_cloud.sql` para auditar el proyecto Supabase Cloud en un clic.
   - Documentación técnica sincronizada al 100% con migraciones `001`–`011`: `ESQUEMA_BD.md`, `POLITICAS_RLS.md` y `Doc/README.md` (sin enlaces locales `file:///`).
+
+---
+
+## [2026-11-23] — Endurecimiento de Producción, Edge Function CORS y CI Automatizado
+
+- **Edge Function `create-business-account` (`supabase/functions/create-business-account/index.ts`)**:
+  - Reemplazado `Access-Control-Allow-Origin: *` por allowlist explícita (`https://latido-opinion.vercel.app`, `localhost:5173`, `127.0.0.1:5173` y variable opcional `ALLOWED_ORIGIN`) con `Vary: Origin`.
+  - Agregados encabezados de seguridad `Cache-Control: no-store` y `X-Content-Type-Options: nosniff` en todas las respuestas JSON.
+  - Límite de tamaño de payload (`16 KB`, respuesta `413`) y validación anti-HTML también en `branchName`.
+  - Agregado `supabase/functions/deno.json` con tipado estricto (`deno.window`).
+- **Configuración Supabase (`supabase/config.toml`)**:
+  - `site_url` y `additional_redirect_urls` actualizados con el dominio productivo `https://latido-opinion.vercel.app` y `/reset-password`.
+  - `password_requirements = "letters_digits"` alineado con las validaciones del Frontend y Edge Function.
+- **Pruebas y CI Automatizado**:
+  - Nueva prueba `tests/edge-function.test.mjs` (8/8 OK) integrada en `npm test`.
+  - Nuevo workflow `.github/workflows/ci.yml` en GitHub Actions ejecutando la suite completa (142 pruebas PGlite + contrato + UTF-8 + Edge Function) en cada push y PR.
+
+- **Migración `012_super_admin_diagnostico.sql` — Diagnóstico detallado de solo lectura para Super Admin**:
+  - Nueva RPC `get_business_diagnostics(p_business_id UUID)` (`SECURITY DEFINER`, ejecutable únicamente por `super_admin`, 100% aditiva sin alterar `get_platform_overview()` ni ninguna tabla/política).
+  - Devuelve configuración y salud de onboarding (logo, destino Google, Modo Rescate, encuesta personalizada, `last_sign_in_at` del dueño), métricas y tendencia (7d, 30d vs 30d previos, distribución 1–5★, top 6 etiquetas 90d), salud del Modo Rescate (tasa rescate, SLA, 1.º contacto promedio, ventas recuperadas), desglose por sucursal (QRs + estado NFC) y últimas 12 opiniones estrictamente anonimizadas (0 PII y 0 comentarios de clientes finales).
+  - Pruebas actualizadas: **151/151 OK** en `migrations.test.mjs` (incluye verificación explícita de rechazo a `anon`/`admin` y ausencia total de PII/texto libre).
