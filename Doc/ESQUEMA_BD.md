@@ -1,6 +1,6 @@
 # Esquema de Base de Datos — LATIDO (PostgreSQL / Supabase)
 
-> Vigente al estado de las migraciones **`001` a `011`**.
+> Vigente al estado de las migraciones **`001` a `012`**.
 
 ## 1. Diagrama Entidad-Relación
 
@@ -87,18 +87,19 @@ storage.buckets: "business-logos" (público, máx 2 MB, PNG/JPG/WebP, carpeta {b
 
 ## 3. Funciones RPC y Edge Functions Vigentes
 
-| Función                                           | Rol habilitado                  | Propósito                                                                                                             |
-| :------------------------------------------------ | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------- |
-| `get_business_by_token(p_token)`                  | `anon`, `authenticated`         | Datos públicos del negocio, destino y `survey_questions` para `/f/:token`.                                            |
-| `submit_feedback(...)`                            | `anon`, `authenticated`         | Alta atómica de opinión + contacto opcional + caso de rescate (honeypot, anti-flood 20/min, consentimiento).          |
-| `get_business_stats(p_days)`                      | `authenticated`                 | Métricas agregadas del panel del negocio (promedio, distribución, top tags).                                          |
-| `get_my_supports()`                               | `authenticated`                 | Uso actual de soportes (`used`, `limit`, `plan_name`).                                                                |
-| `create_branch_with_qr(p_branch_name, p_with_qr)` | `authenticated` (admin)         | Crea sucursal con o sin soporte respetando límite del plan.                                                           |
-| `add_qr_to_branch(p_branch_id)`                   | `authenticated` (admin)         | Asigna un soporte libre a una sucursal propia.                                                                        |
-| `move_qr_to_branch(p_qr_id, p_branch_id)`         | `authenticated` (admin)         | Reasigna un soporte existente a otra sucursal del mismo negocio sin cambiar el token NFC/QR.                          |
-| `set_qr_active(p_qr_id, p_active)`                | `authenticated` (admin)         | Activa o desactiva un QR respetando límite de soportes.                                                               |
-| `get_platform_overview()`                         | `authenticated` (`super_admin`) | Libro mayor agregado con datos del dueño B2B, `logo_url`, sucursales y primer token (0 datos de clientes finales).    |
-| `admin_provision_business(...)`                   | **Solo `service_role`**         | Invocada por la Edge Function `create-business-account`: crea negocio + sucursal + primer QR + vínculo en `profiles`. |
-| `purge_expired_contacts(p_months)`                | **Solo SQL / `pg_cron`**        | Purga contactos resueltos > 12 meses (tope 24 meses) y limpia `rescue_cases.message_sent`.                            |
+| Función                                           | Rol habilitado                  | Propósito                                                                                                                                                           |
+| :------------------------------------------------ | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `get_business_by_token(p_token)`                  | `anon`, `authenticated`         | Datos públicos del negocio, destino y `survey_questions` para `/f/:token`.                                                                                          |
+| `submit_feedback(...)`                            | `anon`, `authenticated`         | Alta atómica de opinión + contacto opcional + caso de rescate (honeypot, anti-flood 20/min, consentimiento).                                                        |
+| `get_business_stats(p_days)`                      | `authenticated`                 | Métricas agregadas del panel del negocio (promedio, distribución, top tags).                                                                                        |
+| `get_my_supports()`                               | `authenticated`                 | Uso actual de soportes (`used`, `limit`, `plan_name`).                                                                                                              |
+| `create_branch_with_qr(p_branch_name, p_with_qr)` | `authenticated` (admin)         | Crea sucursal con o sin soporte respetando límite del plan.                                                                                                         |
+| `add_qr_to_branch(p_branch_id)`                   | `authenticated` (admin)         | Asigna un soporte libre a una sucursal propia.                                                                                                                      |
+| `move_qr_to_branch(p_qr_id, p_branch_id)`         | `authenticated` (admin)         | Reasigna un soporte existente a otra sucursal del mismo negocio sin cambiar el token NFC/QR.                                                                        |
+| `set_qr_active(p_qr_id, p_active)`                | `authenticated` (admin)         | Activa o desactiva un QR respetando límite de soportes.                                                                                                             |
+| `get_platform_overview()`                         | `authenticated` (`super_admin`) | Libro mayor agregado con datos del dueño B2B, `logo_url`, sucursales y primer token (0 datos de clientes finales).                                                  |
+| `get_business_diagnostics(p_business_id)`         | `authenticated` (`super_admin`) | Diagnóstico de solo lectura por negocio: onboarding, tendencia 7d/30d, top tags, Modo Rescate, sucursales y actividad reciente anonimizada (0 PII / 0 texto libre). |
+| `admin_provision_business(...)`                   | **Solo `service_role`**         | Invocada por la Edge Function `create-business-account`: crea negocio + sucursal + primer QR + vínculo en `profiles`.                                               |
+| `purge_expired_contacts(p_months)`                | **Solo SQL / `pg_cron`**        | Purga contactos resueltos > 12 meses (tope 24 meses) y limpia `rescue_cases.message_sent`.                                                                          |
 
 > `create_my_business()` fue revocada en la migración `009`: no existe auto-alta pública de negocios.
