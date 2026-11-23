@@ -2,10 +2,11 @@
 // LATIDO - Edge Function: create-business-account
 // ------------------------------------------------------------------------------
 // Da de alta un negocio completo desde el panel del Super Admin:
-//   1. Verifica el JWT y que el solicitante tenga rol `super_admin`.
-//   2. Crea la cuenta del dueño en Supabase Auth (confirmada, lista para /login).
-//   3. Llama a la RPC `admin_provision_business` (negocio + sucursal + primer QR).
-//   4. Si algo falla en el paso 3, borra la cuenta recién creada (rollback).
+//   1. Verifica origen CORS permitido, método POST y tamaño del payload.
+//   2. Verifica el JWT y que el solicitante tenga rol `super_admin`.
+//   3. Crea la cuenta del dueño en Supabase Auth (confirmada, lista para /login).
+//   4. Llama a la RPC `admin_provision_business` (negocio + sucursal + primer QR).
+//   5. Si algo falla en el paso 4, borra la cuenta recién creada (rollback).
 //
 // Despliegue:
 //   supabase.cmd functions deploy create-business-account --no-verify-jwt
@@ -14,13 +15,13 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://latido-opinion.vercel.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
 
+const MAX_BODY_BYTES = 16 * 1024;
 const EMAIL_RE =
   /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 const UUID_RE =
@@ -28,10 +29,40 @@ const UUID_RE =
 const PERSON_NAME_RE = /^[\p{L}][\p{L}\s'.-]*[\p{L}.]$/u;
 const HTML_TAG_RE = /<[^>]*>/;
 
-function json(body: Record<string, unknown>, status = 200) {
+function getAllowedOrigins(): Set<string> {
+  const extra = (Deno.env.get("ALLOWED_ORIGIN") || "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  return new Set([...DEFAULT_ALLOWED_ORIGINS, ...extra]);
+}
+
+function buildCorsHeaders(origin: string | null, allowed: Set<string>) {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    Vary: "Origin",
+  };
+  if (origin && allowed.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+function json(
+  body: Record<string, unknown>,
+  status: number,
+  corsHeaders: Record<string, string>,
+) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json; charset=utf-8",
+    },
   });
 }
 
@@ -41,11 +72,28 @@ function cleanText(value: unknown, maxLen: number): string {
 }
 
 Deno.serve(async (req: Request) => {
+  const allowedOrigins = getAllowedOrigins();
+  const origin = req.headers.get("Origin");
+  const corsHeaders = buildCorsHeaders(origin, allowedOrigins);
+
+  if (origin && !allowedOrigins.has(origin)) {
+    return json({ error: "Origen no autorizado." }, 403, corsHeaders);
+  }
+
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { status: 200, headers: corsHeaders });
   }
   if (req.method !== "POST") {
-    return json({ error: "Método no permitido." }, 405);
+    return json({ error: "Método no permitido." }, 405, corsHeaders);
+  }
+
+  const contentLength = Number(req.headers.get("Content-Length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return json(
+      { error: "La solicitud excede el tamaño permitido." },
+      413,
+      corsHeaders,
+    );
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -56,6 +104,7 @@ Deno.serve(async (req: Request) => {
     return json(
       { error: "Falta configurar las credenciales internas de la función." },
       500,
+      corsHeaders,
     );
   }
 
@@ -67,7 +116,11 @@ Deno.serve(async (req: Request) => {
   const authHeader = req.headers.get("Authorization") || "";
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) {
-    return json({ error: "Falta el token de sesión. Volvé a ingresar." }, 401);
+    return json(
+      { error: "Falta el token de sesión. Volvé a ingresar." },
+      401,
+      corsHeaders,
+    );
   }
 
   const { data: userData, error: authErr } = await admin.auth.getUser(match[1]);
@@ -75,6 +128,7 @@ Deno.serve(async (req: Request) => {
     return json(
       { error: "Tu sesión venció o no es válida. Volvé a ingresar." },
       401,
+      corsHeaders,
     );
   }
 
@@ -88,17 +142,31 @@ Deno.serve(async (req: Request) => {
     return json(
       { error: "Solo el Super Admin puede crear cuentas de negocios." },
       403,
+      corsHeaders,
     );
   }
 
   // ── 2. Validar entrada ───────────────────────────────────────────────────────
   let payload: Record<string, unknown>;
   try {
-    payload = await req.json();
+    const raw = await req.text();
+    if (raw.length > MAX_BODY_BYTES) {
+      return json(
+        { error: "La solicitud excede el tamaño permitido." },
+        413,
+        corsHeaders,
+      );
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("invalid");
+    }
+    payload = parsed as Record<string, unknown>;
   } catch {
     return json(
       { error: "El cuerpo de la solicitud no es un JSON válido." },
       400,
+      corsHeaders,
     );
   }
 
@@ -122,12 +190,14 @@ Deno.serve(async (req: Request) => {
           "Ingresá un nombre real del responsable (solo letras, mínimo 2 caracteres).",
       },
       400,
+      corsHeaders,
     );
   }
   if (!EMAIL_RE.test(email) || email.includes("..")) {
     return json(
       { error: "Ingresá un email válido para la cuenta del negocio." },
       400,
+      corsHeaders,
     );
   }
   if (
@@ -143,6 +213,7 @@ Deno.serve(async (req: Request) => {
           "La contraseña inicial debe tener entre 8 y 72 caracteres, con al menos una letra y un número.",
       },
       400,
+      corsHeaders,
     );
   }
   const bizLetters = (businessName.match(/\p{L}/gu) || []).length;
@@ -157,6 +228,22 @@ Deno.serve(async (req: Request) => {
           "Ingresá un nombre válido para el negocio (al menos 2 letras, sin HTML).",
       },
       400,
+      corsHeaders,
+    );
+  }
+  const branchLetters = (branchName.match(/\p{L}/gu) || []).length;
+  if (
+    branchName.length < 2 ||
+    branchLetters < 2 ||
+    HTML_TAG_RE.test(branchName)
+  ) {
+    return json(
+      {
+        error:
+          "Ingresá un nombre válido para la sucursal (al menos 2 letras, sin HTML).",
+      },
+      400,
+      corsHeaders,
     );
   }
   if (
@@ -166,10 +253,15 @@ Deno.serve(async (req: Request) => {
     return json(
       { error: "La firma de Modo Rescate debe contener solo letras." },
       400,
+      corsHeaders,
     );
   }
   if (planId && !UUID_RE.test(planId)) {
-    return json({ error: "El plan seleccionado no es válido." }, 400);
+    return json(
+      { error: "El plan seleccionado no es válido." },
+      400,
+      corsHeaders,
+    );
   }
 
   let supportsOverride: number | null = null;
@@ -179,6 +271,7 @@ Deno.serve(async (req: Request) => {
       return json(
         { error: "Los soportes deben ser un número entero entre 1 y 1000." },
         400,
+        corsHeaders,
       );
     }
     supportsOverride = parsed;
@@ -194,7 +287,7 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (planErr || !plan) {
-      return json({ error: "El plan elegido no existe." }, 400);
+      return json({ error: "El plan elegido no existe." }, 400, corsHeaders);
     }
     selectedPlan = plan;
   }
@@ -219,6 +312,7 @@ Deno.serve(async (req: Request) => {
       return json(
         { error: "Ya existe una cuenta registrada con ese email." },
         409,
+        corsHeaders,
       );
     }
     if (/password/i.test(msg)) {
@@ -228,11 +322,13 @@ Deno.serve(async (req: Request) => {
             "La contraseña no cumple los requisitos mínimos (al menos 8 caracteres).",
         },
         400,
+        corsHeaders,
       );
     }
     return json(
       { error: msg || "No pudimos crear la cuenta de usuario." },
       400,
+      corsHeaders,
     );
   }
 
@@ -268,6 +364,7 @@ Deno.serve(async (req: Request) => {
           "No pudimos configurar el negocio. Se canceló el alta.",
       },
       400,
+      corsHeaders,
     );
   }
 
@@ -280,5 +377,6 @@ Deno.serve(async (req: Request) => {
       token: provisioned.token,
     },
     201,
+    corsHeaders,
   );
 });
