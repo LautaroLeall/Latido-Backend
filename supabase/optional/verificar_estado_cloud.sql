@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- LATIDO - Verificación de solo lectura del estado en Supabase Cloud
--- Pegar en Supabase Dashboard → SQL Editor para confirmar que 001–011 están OK.
+-- Pegar en Supabase Dashboard → SQL Editor para confirmar que 001–012 están OK.
 -- ==============================================================================
 
 -- 1. Tablas en `public` y estado de RLS (todas deben tener rls_activo = true)
@@ -21,12 +21,12 @@ SELECT code, name, supports, price_monthly, is_custom, active
 FROM public.plans
 ORDER BY sort_order;
 
--- 4. Funciones clave presentes (009/010/011)
+-- 4. Funciones clave presentes (009/010/011/012)
 SELECT p.proname AS funcion, pg_get_function_identity_arguments(p.oid) AS firma
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = 'public'
-  AND p.proname IN ('admin_provision_business', 'get_business_by_token', 'get_platform_overview', 'submit_feedback', 'purge_expired_contacts')
+  AND p.proname IN ('admin_provision_business', 'get_business_by_token', 'get_platform_overview', 'get_business_diagnostics', 'submit_feedback', 'purge_expired_contacts')
 ORDER BY p.proname;
 
 -- 5. Columnas de encuesta editable (010)
