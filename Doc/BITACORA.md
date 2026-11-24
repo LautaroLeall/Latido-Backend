@@ -167,3 +167,23 @@ El proyecto `uzcmiuqjugsovhlwcarr` quedó indefinidamente en “Coming up…” 
   - Nueva RPC `get_business_diagnostics(p_business_id UUID)` (`SECURITY DEFINER`, ejecutable únicamente por `super_admin`, 100% aditiva sin alterar `get_platform_overview()` ni ninguna tabla/política).
   - Devuelve configuración y salud de onboarding (logo, destino Google, Modo Rescate, encuesta personalizada, `last_sign_in_at` del dueño), métricas y tendencia (7d, 30d vs 30d previos, distribución 1–5★, top 6 etiquetas 90d), salud del Modo Rescate (tasa rescate, SLA, 1.º contacto promedio, ventas recuperadas), desglose por sucursal (QRs + estado NFC) y últimas 12 opiniones estrictamente anonimizadas (0 PII y 0 comentarios de clientes finales).
   - Pruebas actualizadas: **151/151 OK** en `migrations.test.mjs` (incluye verificación explícita de rechazo a `anon`/`admin` y ausencia total de PII/texto libre).
+
+---
+
+## [2026-11-24] — Migración a São Paulo (`sa-east-1`), Recuperación Verificada (`013`) y Endurecimiento (`014`)
+
+- **Migración de región Supabase**: proyecto migrado de `us-east-2` (`pocsdftehmjdwzvjcfcw`) a **South America — São Paulo (`sa-east-1`, `qonjvzbpfafhfciwooba`)** para menor latencia en Argentina/LATAM. Edge Function `create-business-account` desplegada con `Verify JWT with legacy secret = OFF` (compatibilidad con claves asimétricas / `sb_publishable_...`).
+- **Migración `013_verificar_recuperacion_cuenta.sql`**:
+  - Nueva tabla efímera `public.recovery_check_log` (hash MD5, RLS activo, `REVOKE ALL` a `anon`/`authenticated`) y RPC `public.check_recovery_account(p_email text)` para validar antes de enviar correos de `/recuperar` que exista un negocio activo o Super Admin con ese email, sin filtrar PII y con anti-abuso (8 consultas/15 min por email, 120/5 min globales).
+- **Migración `014_endurecer_storage_y_rpcs.sql`**:
+  - Resuelve `public_bucket_allows_listing` (lint `0025`): elimina `logos_public_read` en `storage.objects` y crea `logos_business_select` (`FOR SELECT TO authenticated`, restringida a `{my_business_id}/` para admins del negocio o Super Admin), manteniendo intactas las URLs públicas de los logos (`public = true`) y la limpieza previa en `logoUpload.js`.
+  - Revoca `EXECUTE` sobre `public.check_recovery_account(text)` a `authenticated` (uso exclusivo de `anon` en `/recuperar`).
+- **Pruebas actualizadas**: **168/168 OK** en `migrations.test.mjs`, **20/20** contrato OK, **0** errores UTF-8, **8/8** Edge Function OK.
+- **Migración `015_gestion_kits_super_admin.sql` — Centro de armado y entrega de kits QR + NFC**:
+  - Columnas aditivas en `qr_codes`: `delivered_at` (`TIMESTAMPTZ`) y `kit_notes` (`TEXT`, ≤ 300 chars).
+  - Nuevas RPCs exclusivas de Super Admin (`SECURITY DEFINER`, guarda `is_super_admin()`): `super_list_kits()` (cola global priorizada por pendientes + uso agregado 0-PII), `super_update_kit(...)` (avanza `nfc_status`, sella `delivered_at`, valida cupo al reactivar y guarda notas) y `super_create_kit(...)` (emite soporte extra en sucursal nueva o existente respetando límite del plan).
+  - Pruebas actualizadas: **181/181 OK** en `migrations.test.mjs`, **23/23** contrato OK, **0** errores UTF-8, **8/8** Edge Function OK.
+- **Migración `016_editar_sucursales_super_admin.sql` — Edición del nombre de sucursales (Admin y Super Admin)**:
+  - Amplía la política `branches_update` en `public.branches` para permitir renombrar sucursales tanto al administrador del propio negocio como al Super Admin.
+  - Agrega validación `chk_branch_name` (`2..60` caracteres) y trigger `tg_branches_protect` (congela `business_id` y `created_at`, aplica `btrim(name)`).
+  - Pruebas actualizadas: **188/188 OK** en `migrations.test.mjs`, **23/23** contrato OK, **0** errores UTF-8, **8/8** Edge Function OK.
