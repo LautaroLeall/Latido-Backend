@@ -1,6 +1,6 @@
 # Políticas de Seguridad, Permisos y RLS — LATIDO
 
-> Modelo vigente tras las migraciones **`005`, `007`, `008`, `009`, `010`, `011` y `012`** (verificado con **151/151 pruebas automatizadas** en `npm test`).
+> Modelo vigente tras las migraciones **`005` a `016`** (verificado con pruebas automatizadas en `npm test`).
 
 ---
 
@@ -10,7 +10,7 @@ LATIDO aplica dos capas independientes de seguridad en PostgreSQL:
 
 1. **Capa 1 — Permisos mínimos de tabla y función (`008` y `009`)**:
    - Se revocan todos los permisos heredados a `anon` y `authenticated`.
-   - `anon` únicamente tiene `SELECT` sobre `public.plans` y `EXECUTE` sobre `get_business_by_token()` y `submit_feedback()`. Ninguna otra tabla ni RPC es accesible para `anon`.
+   - `anon` únicamente tiene `SELECT` sobre `public.plans` y `EXECUTE` sobre `get_business_by_token()`, `submit_feedback()` y `check_recovery_account()`. Ninguna otra tabla ni RPC es accesible para `anon`.
    - `admin_provision_business()` solo es ejecutable por `service_role` (desde la Edge Function `create-business-account`).
    - `create_my_business()`, `generate_qr_token()`, `purge_expired_contacts()` y todos los triggers están revocados a `PUBLIC`, `anon` y `authenticated`.
 2. **Capa 2 — Row Level Security (`005`, `007`, `011`)**:
@@ -22,20 +22,20 @@ LATIDO aplica dos capas independientes de seguridad en PostgreSQL:
 
 ## 2. Matriz de Acceso por Rol
 
-| Recurso                     | Anónimo (`anon`)                        | Negocio (`admin` / `employee`)                                                 | Super Admin (`super_admin`)                                                                                                 |
-| :-------------------------- | :-------------------------------------- | :----------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------- |
-| `plans`                     | `SELECT` (solo activos)                 | `SELECT` (activos + propio)                                                    | `SELECT / INSERT / UPDATE / DELETE`                                                                                         |
-| `profiles`                  | **Sin permiso**                         | `SELECT` de su negocio; `UPDATE` solo `full_name` propio                       | `SELECT / UPDATE` todos                                                                                                     |
-| `businesses`                | **Sin permiso** (vía RPC)               | `SELECT` propio; `admin` hace `UPDATE` de config/nombre/logo                   | `SELECT / INSERT / UPDATE / DELETE`                                                                                         |
-| `branches`                  | **Sin permiso**                         | `SELECT` propias; `admin` edita propias (alta vía RPC)                         | `SELECT` todas                                                                                                              |
-| `qr_codes`                  | **Sin permiso** (vía RPC)               | `SELECT` propios (alta/movimiento/estado vía RPC)                              | `SELECT` todos                                                                                                              |
-| `survey_questions`          | **Sin permiso** (vía RPC)               | `SELECT` propias; `admin` CRUD propio                                          | **Sin acceso**                                                                                                              |
-| `responses` _(anónima)_     | **Solo INSERT vía `submit_feedback()`** | `SELECT` solo de su negocio                                                    | **Sin acceso a comentarios** (agregados y actividad sin texto vía `get_platform_overview()` / `get_business_diagnostics()`) |
-| `response_contacts` _(PII)_ | **Solo INSERT vía `submit_feedback()`** | `SELECT / UPDATE` propios; `admin` puede `DELETE` (Ley 25.326)                 | **BLOQUEADO (0 filas)**                                                                                                     |
-| `rescue_cases`              | **Solo INSERT vía `submit_feedback()`** | `SELECT / UPDATE` propios (con guardas de estado y snapshot)                   | **Sin acceso directo**                                                                                                      |
-| `rescue_templates`          | **Sin permiso**                         | `SELECT` globales + propias; `admin` CRUD propias                              | `SELECT` todas; CRUD globales                                                                                               |
-| `rescue_metrics` _(view)_   | **Sin permiso**                         | `SELECT` propio (`security_invoker = true`)                                    | **Sin acceso directo**                                                                                                      |
-| Storage `business-logos`    | `SELECT` público (para el ticket)       | `admin` `INSERT/UPDATE/DELETE` solo en `{business_id}/` (PNG/JPG/WebP, ≤ 2 MB) | `INSERT/UPDATE/DELETE`                                                                                                      |
+| Recurso                     | Anónimo (`anon`)                                                               | Negocio (`admin` / `employee`)                                                        | Super Admin (`super_admin`)                                                                                                 |
+| :-------------------------- | :----------------------------------------------------------------------------- | :------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------------------- |
+| `plans`                     | `SELECT` (solo activos)                                                        | `SELECT` (activos + propio)                                                           | `SELECT / INSERT / UPDATE / DELETE`                                                                                         |
+| `profiles`                  | **Sin permiso**                                                                | `SELECT` de su negocio; `UPDATE` solo `full_name` propio                              | `SELECT / UPDATE` todos                                                                                                     |
+| `businesses`                | **Sin permiso** (vía RPC)                                                      | `SELECT` propio; `admin` hace `UPDATE` de config/nombre/logo                          | `SELECT / INSERT / UPDATE / DELETE`                                                                                         |
+| `branches`                  | **Sin permiso**                                                                | `SELECT` propias; `admin` renombra propias (alta vía RPC)                             | `SELECT / UPDATE` nombre todas (alta de kits vía RPC)                                                                       |
+| `qr_codes`                  | **Sin permiso** (vía RPC)                                                      | `SELECT` propios (alta/movimiento/estado vía RPC)                                     | `SELECT` todos (alta/seguimiento de kits vía `super_list_kits` / `super_update_kit` / `super_create_kit`)                   |
+| `survey_questions`          | **Sin permiso** (vía RPC)                                                      | `SELECT` propias; `admin` CRUD propio                                                 | **Sin acceso**                                                                                                              |
+| `responses` _(anónima)_     | **Solo INSERT vía `submit_feedback()`**                                        | `SELECT` solo de su negocio                                                           | **Sin acceso a comentarios** (agregados y actividad sin texto vía `get_platform_overview()` / `get_business_diagnostics()`) |
+| `response_contacts` _(PII)_ | **Solo INSERT vía `submit_feedback()`**                                        | `SELECT / UPDATE` propios; `admin` puede `DELETE` (Ley 25.326)                        | **BLOQUEADO (0 filas)**                                                                                                     |
+| `rescue_cases`              | **Solo INSERT vía `submit_feedback()`**                                        | `SELECT / UPDATE` propios (con guardas de estado y snapshot)                          | **Sin acceso directo**                                                                                                      |
+| `rescue_templates`          | **Sin permiso**                                                                | `SELECT` globales + propias; `admin` CRUD propias                                     | `SELECT` todas; CRUD globales                                                                                               |
+| `rescue_metrics` _(view)_   | **Sin permiso**                                                                | `SELECT` propio (`security_invoker = true`)                                           | **Sin acceso directo**                                                                                                      |
+| Storage `business-logos`    | Sin listado (`SELECT` revocado en `014`; imágenes directas vía bucket público) | `admin` `SELECT/INSERT/UPDATE/DELETE` solo en `{business_id}/` (PNG/JPG/WebP, ≤ 2 MB) | `SELECT/INSERT/UPDATE/DELETE`                                                                                               |
 
 ---
 
@@ -45,6 +45,7 @@ LATIDO aplica dos capas independientes de seguridad en PostgreSQL:
   - `handle_new_user()` crea todos los perfiles nuevos como `'admin'` (ignora cualquier rol en metadata).
   - `tg_profiles_protect()` impide que un usuario cambie su `role` o `business_id`.
   - `tg_businesses_protect()` impide que un admin de negocio cambie `owner_id`, `plan_id`, `supports_override` o `active`.
+  - `tg_branches_protect()` (`016`) congela `business_id` y `created_at` al renombrar sucursales (`chk_branch_name`: 2–60 caracteres).
 - **Integridad de Modo Rescate**:
   - `tg_rescue_cases_guard()` congela `avg_ticket_snapshot` y `sla_due_at`, sella `first_contacted_at` / `resolved_by` en el servidor y prohíbe reabrir casos cerrados.
 - **Derecho de supresión y retención**:
