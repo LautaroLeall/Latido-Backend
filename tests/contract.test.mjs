@@ -30,7 +30,8 @@ const expectedFks = [
   'responses_branch_id_fkey',
   'response_contacts_response_id_fkey',
   'rescue_cases_response_id_fkey',
-  'rescue_cases_contact_id_fkey'
+  'rescue_cases_contact_id_fkey',
+  'rescue_cases_resolved_by_fkey'
 ];
 
 const { rows } = await db.query(`SELECT conname FROM pg_constraint WHERE contype = 'f'`);
@@ -63,7 +64,9 @@ const expectedCols = [
   ['rescue_metrics', 'within_sla'],
   ['survey_questions', 'options'],
   ['survey_questions', 'placeholder'],
-  ['survey_questions', 'active']
+  ['survey_questions', 'active'],
+  ['qr_codes', 'delivered_at'],
+  ['qr_codes', 'kit_notes']
 ];
 
 for (const [t, c] of expectedCols) {
