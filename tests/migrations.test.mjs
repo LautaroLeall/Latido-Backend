@@ -67,7 +67,7 @@ for (const f of fs.readdirSync(MIG_DIR).filter(f => f.endsWith('.sql')).sort()) 
   try { await db.exec(fs.readFileSync(path.join(MIG_DIR, f), 'utf8')); ok(true, f); }
   catch (e) { ok(false, `${f}: ${e.message}`); console.log('\nAbortado.'); process.exit(1); }
 }
-for (const f of ['007_planes_soportes_y_privacidad.sql', '008_permisos_minimos.sql', '009_alta_de_negocios_por_super_admin.sql', '010_encuesta_y_gestion_completa.sql', '011_logos_negocios.sql', '012_super_admin_diagnostico.sql']) {
+for (const f of ['007_planes_soportes_y_privacidad.sql', '008_permisos_minimos.sql', '009_alta_de_negocios_por_super_admin.sql', '010_encuesta_y_gestion_completa.sql', '011_logos_negocios.sql', '012_super_admin_diagnostico.sql', '013_verificar_recuperacion_cuenta.sql', '014_endurecer_storage_y_rpcs.sql', '015_gestion_kits_super_admin.sql', '016_editar_sucursales_super_admin.sql']) {
   try { await db.exec(fs.readFileSync(path.join(MIG_DIR, f), 'utf8')); ok(true, `${f} es idempotente`); }
   catch (e) { ok(false, `${f} re-ejecución: ${e.message}`); }
 }
@@ -179,6 +179,8 @@ ok(Number(c2.rows[0].recovered_value) === Number(c2.rows[0].avg_ticket_snapshot)
 ok(Number(c2.rows[0].avg_ticket_snapshot) === 0, 'avg_ticket_snapshot se congeló al crear el caso (0), no al subir ticket promedio después (8500)');
 ok(c2.rows[0].resolved_by === A, 'resolved_by = usuario que cerró');
 await expectError(q(A, `UPDATE public.rescue_cases SET status='open'`), 'Un caso cerrado no se reabre', 'cerrado');
+const cNote = await q(A, `UPDATE public.rescue_cases SET resolution_note='Le invitamos un café de cortesía' RETURNING resolution_note, status`);
+ok(cNote.rows[0]?.resolution_note === 'Le invitamos un café de cortesía' && cNote.rows[0]?.status === 'resolved', 'En un caso cerrado se puede agregar o editar la nota de cómo se solucionó');
 const { rows: [cs] } = await db.query(`SELECT status FROM public.response_contacts WHERE full_name='Martín Gómez'`);
 ok(cs.status === 'resolved', 'Estado del contacto sincronizado con el caso');
 const met = await q(A, `SELECT * FROM public.rescue_metrics`);
@@ -317,15 +319,20 @@ const ov10 = await q(S, `SELECT * FROM public.get_platform_overview()`);
 const rowA = ov10.rows.find(r => r.name === 'Cafetería del Sol');
 ok(rowA && rowA.owner_email === 'sofia@sol.com' && rowA.owner_name === 'Sofía P.' && Number(rowA.branches_count) >= 1 && !!rowA.primary_token, `Libro mayor incluye dueño (${rowA?.owner_email}), sucursales (${rowA?.branches_count}) y token principal`);
 
-console.log('\n[13] Logos de negocios y aislamiento en Storage (011)');
+console.log('\n[13] Logos de negocios y aislamiento en Storage (011 + 014)');
 const { rows: [bkt] } = await db.query(`SELECT public, file_size_limit, allowed_mime_types FROM storage.buckets WHERE id = 'business-logos'`);
 ok(bkt && bkt.public === true && Number(bkt.file_size_limit) === 2097152 && !bkt.allowed_mime_types.includes('image/svg+xml'), 'Bucket business-logos público, 2MB, sin SVG');
 await expectError(q(A, `UPDATE public.businesses SET logo_url = 'javascript:alert(1)'`), 'logo_url maliciosa rechazada', 'chk_logo_url');
-await q(A, `UPDATE public.businesses SET logo_url = 'https://pocsdftehmjdwzvjcfcw.supabase.co/storage/v1/object/public/business-logos/${bizAId}/logo.png'`);
+await q(A, `UPDATE public.businesses SET logo_url = 'https://qonjvzbpfafhfciwooba.supabase.co/storage/v1/object/public/business-logos/${bizAId}/logo.png'`);
 const tokLogo = await as('anon', null, tx => tx.query(`SELECT public.get_business_by_token($1) AS b`, [tokenA]));
 ok(tokLogo.rows[0].b.logo_url.includes(bizAId), 'get_business_by_token devuelve el logo_url guardado');
 await q(A, `INSERT INTO storage.objects (bucket_id, name) VALUES ('business-logos', '${bizAId}/logo-1.png')`);
-ok((await as('anon', null, tx => tx.query(`SELECT name FROM storage.objects WHERE bucket_id = 'business-logos'`))).rows.length === 1, 'Anon puede leer el logo público en el ticket');
+ok((await as('anon', null, tx => tx.query(`SELECT name FROM storage.objects WHERE bucket_id = 'business-logos'`))).rows.length === 0, 'Anon NO puede listar archivos de business-logos (sin enumeración pública)');
+ok((await q(A, `SELECT name FROM storage.objects WHERE bucket_id = 'business-logos'`)).rows.length === 1, 'Admin de A sí puede listar su propia carpeta de logos');
+ok((await q(B, `SELECT name FROM storage.objects WHERE bucket_id = 'business-logos'`)).rows.length === 0, 'Negocio B NO puede listar logos de A');
+ok((await q(S, `SELECT name FROM storage.objects WHERE bucket_id = 'business-logos'`)).rows.length === 1, 'Super Admin puede listar logos en Storage');
+const { rows: publicListPol } = await db.query(`SELECT policyname FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'logos_public_read'`);
+ok(publicListPol.length === 0, 'Política amplia logos_public_read eliminada (0025 resuelto)');
 await expectError(q(B, `INSERT INTO storage.objects (bucket_id, name) VALUES ('business-logos', '${bizAId}/hack.png')`), 'Negocio B NO puede subir logo en la carpeta de A', 'row-level security');
 await expectError(as('anon', null, tx => tx.query(`INSERT INTO storage.objects (bucket_id, name) VALUES ('business-logos', '${bizAId}/anon.png')`)), 'Anon NO puede subir logos', 'row-level security');
 const delByB = await q(B, `DELETE FROM storage.objects WHERE name = '${bizAId}/logo-1.png' RETURNING id`);
@@ -355,6 +362,76 @@ ok(
   diag.recent_activity.every(item => !('comment' in item) && !('full_name' in item) && !('email' in item) && !('phone' in item)),
   'Actividad reciente del diagnóstico 100% anonimizada (0 PII y 0 texto libre)'
 );
+
+console.log('\n[13c] Verificación segura de cuenta en recuperación de contraseña (013)');
+const recActive = (await as('anon', null, tx => tx.query(`SELECT public.check_recovery_account('  SOFIA@SOL.COM ') AS r`))).rows[0].r;
+ok(
+  recActive.eligible === true && recActive.reason === 'ok' && Object.keys(recActive).sort().join(',') === 'eligible,reason',
+  'Negocio activo habilitado para recuperar contraseña (sin filtrar PII ni rol)'
+);
+const recSuper = (await as('anon', null, tx => tx.query(`SELECT public.check_recovery_account('root@latido.app') AS r`))).rows[0].r;
+ok(recSuper.eligible === true && recSuper.reason === 'ok', 'Super Admin habilitado para recuperar contraseña');
+
+const recMissing = (await as('anon', null, tx => tx.query(`SELECT public.check_recovery_account('nadie@inexistente.com') AS r`))).rows[0].r;
+ok(recMissing.eligible === false && recMissing.reason === 'not_found', 'Email sin cuenta rechazada (not_found)');
+
+const { rows: [uOrphan] } = await db.query(`INSERT INTO auth.users (email) VALUES ('sin-negocio@ejemplo.com') RETURNING id`);
+ok(!!uOrphan.id, 'Usuario huérfano sin negocio creado para prueba');
+const recOrphan = (await as('anon', null, tx => tx.query(`SELECT public.check_recovery_account('sin-negocio@ejemplo.com') AS r`))).rows[0].r;
+ok(recOrphan.eligible === false && recOrphan.reason === 'not_found', 'Usuario sin negocio asignado NO puede recuperar acceso');
+
+const recSusp = (await as('anon', null, tx => tx.query(`SELECT public.check_recovery_account('gym@levels.com') AS r`))).rows[0].r;
+ok(recSusp.eligible === false && recSusp.reason === 'suspended', 'Negocio suspendido devuelve reason=suspended y no envía enlace');
+
+await expectError(as('anon', null, tx => tx.query(`SELECT * FROM public.recovery_check_log`)), 'Anon NO puede leer recovery_check_log', 'permission denied');
+await expectError(q(A, `SELECT public.check_recovery_account('sofia@sol.com')`), 'Authenticated NO puede ejecutar check_recovery_account (014: exclusiva de anon)', 'permission denied');
+
+let recFloodErr = null;
+for (let i = 0; i < 10 && !recFloodErr; i++) {
+  try { await as('anon', null, tx => tx.query(`SELECT public.check_recovery_account('flood@test.com')`)); }
+  catch (e) { recFloodErr = e.message; }
+}
+ok(recFloodErr && recFloodErr.includes('Demasiados intentos'), `Anti-abuso en check_recovery_account activado: "${recFloodErr}"`);
+
+console.log('\n[13d] Gestión operativa de kits QR + NFC por Super Admin (015)');
+await expectError(as('anon', null, tx => tx.query(`SELECT * FROM public.super_list_kits()`)), 'Anon NO puede listar kits', 'permission denied');
+await expectError(q(A, `SELECT * FROM public.super_list_kits()`), 'Admin de negocio NO puede listar kits de plataforma', 'Solo el Super Admin');
+await expectError(q(A, `SELECT public.super_update_kit('${qrId}', 'programmed', true)`), 'Admin de negocio NO puede alterar estado NFC/entrega', 'Solo el Super Admin');
+await expectError(q(A, `SELECT public.super_create_kit('${bizAId}', NULL, 'Hack')`), 'Admin de negocio NO puede llamar super_create_kit', 'Solo el Super Admin');
+
+const kitsBefore = (await q(S, `SELECT * FROM public.super_list_kits()`)).rows;
+ok(kitsBefore.length >= 2 && kitsBefore.some(k => k.qr_id === qrId && k.nfc_status === 'pending' && k.delivered_at === null), `Super Admin lista ${kitsBefore.length} kits físicos con estado inicial pending`);
+
+const updKit1 = (await q(S, `SELECT public.super_update_kit('${qrId}', 'programmed', NULL, NULL, 'Acrílico negro 10x15 probado en iPhone') AS r`)).rows[0].r;
+ok(updKit1.nfc_status === 'programmed' && updKit1.delivered_at === null && updKit1.kit_notes.includes('Acrílico'), 'Super Admin marca NFC grabado y guarda nota de armado');
+
+const updKit2 = (await q(S, `SELECT public.super_update_kit('${qrId}', NULL, true) AS r`)).rows[0].r;
+ok(updKit2.delivered_at !== null && updKit2.nfc_status === 'programmed', 'Super Admin marca soporte entregado y sella delivered_at');
+
+const updKit3 = (await q(S, `SELECT public.super_update_kit('${qrId}', NULL, false, NULL, NULL, true) AS r`)).rows[0].r;
+ok(updKit3.delivered_at === null && updKit3.kit_notes === null, 'Super Admin puede revertir entrega y limpiar nota');
+
+// Super Admin puede emitir soporte adicional respetando el cupo del plan
+await q(S, `UPDATE public.businesses SET plan_id = (SELECT id FROM public.plans WHERE code = 'premium') WHERE id = '${bizAId}'`);
+const newKit = (await q(S, `SELECT public.super_create_kit('${bizAId}', NULL, 'Sucursal Patio', 'Atril barra exterior') AS r`)).rows[0].r;
+ok(!!newKit.qr_id && !!newKit.token && newKit.branch_name === 'Sucursal Patio', `Super Admin crea sucursal + kit listo para armar (${newKit.token})`);
+const kitsAfter = (await q(S, `SELECT * FROM public.super_list_kits()`)).rows;
+ok(kitsAfter.some(k => k.qr_id === newKit.qr_id && k.kit_notes === 'Atril barra exterior' && k.nfc_status === 'pending'), 'El nuevo kit aparece en la cola de Super Admin como pending');
+// Devolver negocio A a Plan Base (desactivando el kit extra para no afectar conteos posteriores)
+await q(S, `SELECT public.super_update_kit('${newKit.qr_id}', 'inactive', false, false)`);
+await q(S, `UPDATE public.businesses SET plan_id = (SELECT id FROM public.plans WHERE code = 'base') WHERE id = '${bizAId}'`);
+
+console.log('\n[13e] Edición del nombre de sucursal por Admin y Super Admin (016)');
+const brA1 = (await q(A, `SELECT id, name FROM public.branches ORDER BY created_at ASC LIMIT 1`)).rows[0];
+const renByA = (await q(A, `UPDATE public.branches SET name = '  Sucursal Centro Principal  ' WHERE id = '${brA1.id}' RETURNING name`)).rows[0];
+ok(renByA?.name === 'Sucursal Centro Principal', 'Admin A puede renombrar su propia sucursal (con trim automático)');
+const renByB = (await q(B, `UPDATE public.branches SET name = 'Hackeada' WHERE id = '${brA1.id}' RETURNING id`)).rows;
+ok(renByB.length === 0, 'Negocio B NO puede renombrar la sucursal de A');
+const renByS = (await q(S, `UPDATE public.branches SET name = 'Casa Central Sol' WHERE id = '${brA1.id}' RETURNING name`)).rows[0];
+ok(renByS?.name === 'Casa Central Sol', 'Super Admin puede renombrar cualquier sucursal');
+await expectError(q(A, `UPDATE public.branches SET name = 'X' WHERE id = '${brA1.id}'`), 'Nombre de sucursal demasiado corto rechazado', '2 y 60');
+const bizBId = (await q(B, `SELECT public.my_business_id() AS id`)).rows[0].id;
+await expectError(q(S, `UPDATE public.branches SET business_id = '${bizBId}' WHERE id = '${brA1.id}'`), 'No se puede mover una sucursal a otro negocio vía UPDATE', 'otro negocio');
 
 console.log('\n[14] Anti-flood');
 let floodErr = null;
@@ -391,8 +468,13 @@ const { rows: anonFns } = await db.query(`
   ORDER BY p.proname
 `);
 const anonFnNames = anonFns.map(r => r.routine_name);
-ok(anonFnNames.length === 2 && anonFnNames.includes('get_business_by_token') && anonFnNames.includes('submit_feedback'),
-  `anon solo puede ejecutar 2 RPCs (${anonFnNames.join(', ')})`);
+ok(
+  anonFnNames.length === 3 &&
+  anonFnNames.includes('check_recovery_account') &&
+  anonFnNames.includes('get_business_by_token') &&
+  anonFnNames.includes('submit_feedback'),
+  `anon solo puede ejecutar 3 RPCs (${anonFnNames.join(', ')})`
+);
 
 console.log(`\n══════ RESULTADO MIGRACIONES: ${pass} OK · ${fail} FALLAS ══════\n`);
 process.exit(fail ? 1 : 0);
